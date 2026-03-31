@@ -3641,7 +3641,9 @@ function toChineseNotation(bd, fr, fc, tr, tc){
   const dir = dr === 0 ? '平' : (forward ? '进' : '退');
 
   // 终点数字：马/相/象/仕/士→目标列，其余进退→步数，平→目标列
-  const isDiag = ['馬','相','象','仕','士'].includes(p.char);
+  // 用走子几何判断：列发生变化且行也变化（斜走）→用目标列号
+  const dc = tc - fc;
+  const isDiag = (dc !== 0 && dr !== 0);
   const endN = (dr === 0 || isDiag) ? colN(tc) : Math.abs(dr);
 
   // 同列多子检测
