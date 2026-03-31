@@ -4693,8 +4693,7 @@ function initBoard() {
 let _autoRetryCount=0;
 // 动态构建WebSocket URL：同源路径，自动适配http/https、任何域名/IP
 function getWsUrl(){
-  const proto = location.protocol==='https:' ? 'wss:' : 'ws:';
-  return proto + '//' + location.host + '/ws';
+  return 'ws://47.88.32.240:8765';
 }
 function autoConnect(){
   if(ws && ws.readyState===WebSocket.OPEN) return;
