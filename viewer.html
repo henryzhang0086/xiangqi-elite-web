@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>象棋飞刀研究平台</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;700;900&family=Noto+Sans+SC:wght@300;400;500;700&family=DM+Mono:wght@400;500&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0e0c09;color:#e0d8cc;font-family:'Noto Sans SC',sans-serif;min-height:100vh}
+.header{padding:16px 24px;display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid #2a2520}
+.header h1{font-family:'Noto Serif SC',serif;font-size:20px;color:#c89628;letter-spacing:3px}
+.header .stats{font-size:11px;color:#5a5550}
+.header .stats b{color:#c89628}
+.main{display:grid;grid-template-columns:420px 1fr;gap:16px;padding:16px 24px;height:calc(100vh - 70px)}
+.card{background:linear-gradient(135deg,#1a1814,#14120f);border:1px solid #2a2520;border-radius:8px;padding:14px}
+.board-area{display:flex;flex-direction:column;gap:10px}
+
+/* 棋盘 */
+.board-container{position:relative;width:396px;height:440px;background:#1a1610;border-radius:8px;overflow:hidden}
+canvas{display:block}
+
+/* 控制栏 */
+.controls{display:flex;gap:6px;align-items:center}
+.controls button{padding:6px 14px;border-radius:5px;border:none;cursor:pointer;font-size:12px;font-weight:600;font-family:inherit;background:#2a2520;color:#e0d8cc;transition:all .15s}
+.controls button:hover{background:#3a3530}
+.controls button.primary{background:linear-gradient(135deg,#c89628,#a07818);color:#0e0c09}
+.controls .info{flex:1;text-align:right;font-size:11px;color:#7a756a}
+.move-path{display:flex;flex-wrap:wrap;gap:3px;margin-top:6px}
+.move-path span{padding:2px 7px;border-radius:3px;font-size:11px;cursor:pointer;font-family:'Noto Serif SC',serif}
+.move-path span.red{background:#c44a3a20;color:#c44a3a}
+.move-path span.black{background:#4a7ab520;color:#4a7ab5}
+.move-path span.active{outline:1.5px solid #c89628}
+
+/* 右侧面板 */
+.panel{display:flex;flex-direction:column;gap:10px;overflow-y:auto;max-height:calc(100vh - 86px)}
+.panel::-webkit-scrollbar{width:4px}
+.panel::-webkit-scrollbar-thumb{background:#3a3530;border-radius:2px}
+.tabs{display:flex;gap:2px;margin-bottom:4px}
+.tabs button{flex:1;padding:8px;font-size:12px;font-weight:600;border:none;cursor:pointer;background:#1a1814;color:#7a756a;border-bottom:2px solid transparent;font-family:inherit;transition:all .15s}
+.tabs button.active{color:#c89628;border-bottom-color:#c89628;background:#c8962810}
+
+/* 棋谱列表 */
+.game-item{padding:10px;margin-bottom:3px;border-radius:6px;cursor:pointer;background:#12100d;border:1px solid transparent;transition:all .15s}
+.game-item:hover{border-color:#2a2520}
+.game-item.selected{background:#c8962810;border-color:#c8962830}
+.game-item .title{font-size:12px;font-weight:600;color:#e0d8cc}
+.game-item .meta{font-size:10px;color:#7a756a;margin-top:3px}
+.game-item .tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:600;margin-right:4px}
+.tag-red{background:#c44a3a18;color:#c44a3a;border:1px solid #c44a3a30}
+.tag-black{background:#4a7ab518;color:#4a7ab5;border:1px solid #4a7ab530}
+.tag-draw{background:#6a6a6a18;color:#8a8a8a;border:1px solid #6a6a6a30}
+.tag-opening{background:#c8962818;color:#c89628;border:1px solid #c8962830}
+
+/* 着法列表 */
+.move-list{display:grid;grid-template-columns:30px 1fr 1fr;gap:1px;font-size:12px}
+.move-list .num{color:#5a5550;text-align:right;padding:4px 6px;font-family:'DM Mono',monospace}
+.move-list .mv{padding:4px 8px;border-radius:3px;cursor:pointer;transition:all .1s}
+.move-list .mv:hover{background:#2a2520}
+.move-list .mv.current{background:#c8962820;color:#c89628;font-weight:600}
+.move-list .mv.red-mv{color:#e8a090}
+.move-list .mv.black-mv{color:#90b8d8}
+
+/* 飞刀标记 */
+.knife-badge{display:inline-block;background:#e85a4f20;color:#e85a4f;border:1px solid #e85a4f40;padding:0 4px;border-radius:3px;font-size:9px;margin-left:4px}
+
+/* 加载提示 */
+.loading{text-align:center;padding:40px;color:#5a5550;font-size:13px}
+.empty{text-align:center;padding:40px;color:#5a5550}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>棋道研究</h1>
+  <div class="stats">
+    棋谱 <b id="totalGames">-</b> · 飞刀 <b id="totalKnives">-</b> · 引擎 <b>Pikafish</b>
+  </div>
+</div>
+
+<div class="main">
+  <!-- 左: 棋盘 -->
+  <div class="board-area">
+    <div class="card">
+      <div class="board-container">
+        <canvas id="board" width="396" height="440"></canvas>
+      </div>
+      <div class="controls" style="margin-top:10px">
+        <button onclick="gotoStart()">⟳ 初始</button>
+        <button onclick="prevMove()">← 上一步</button>
+        <button onclick="nextMove()">→ 下一步</button>
+        <button onclick="gotoEnd()">末尾 →|</button>
+        <div class="info" id="boardInfo">走棋方: 红 · 回合 1</div>
+      </div>
+      <div class="move-path" id="movePath"></div>
+    </div>
+    <!-- 对局信息 -->
+    <div class="card" id="gameInfo" style="font-size:12px;color:#7a756a">
+      <div style="font-size:14px;font-weight:700;color:#c89628;font-family:'Noto Serif SC',serif" id="gameTitle">选择一盘棋谱开始研究</div>
+      <div id="gameDetail" style="margin-top:6px"></div>
+    </div>
+  </div>
+
+  <!-- 右: 面板 -->
+  <div class="panel">
+    <div class="tabs">
+      <button class="active" onclick="switchTab('games',this)">📋 棋谱列表</button>
+      <button onclick="switchTab('moves',this)">📝 着法详情</button>
+    </div>
+    <div id="tab-games" class="card" style="max-height:none">
+      <div style="margin-bottom:10px">
+        <input id="searchInput" placeholder="搜索棋手/开局..." oninput="filterGames()" style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid #2a2520;background:#12100d;color:#e0d8cc;font-size:12px;font-family:inherit;outline:none">
+      </div>
+      <div id="gameList" class="loading">正在加载棋谱...</div>
+    </div>
+    <div id="tab-moves" class="card" style="display:none">
+      <div id="moveList" class="empty">请先选择一盘棋谱</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══ 棋盘渲染 ═══
+const PIECES = {K:'帅',A:'仕',B:'相',N:'马',R:'车',C:'炮',P:'兵',k:'将',a:'士',b:'象',n:'马',r:'车',c:'炮',p:'卒'};
+const INIT_FEN = 'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w';
+
+function parseFen(fen) {
+  const b = Array(10).fill(null).map(()=>Array(9).fill(null));
+  const rows = fen.split(' ')[0].split('/');
+  for(let r=0;r<rows.length;r++){let c=0;for(const ch of rows[r]){if(/\d/.test(ch))c+=parseInt(ch);else{b[r][c]=ch;c++;}}}
+  return b;
+}
+
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+const CW = 42, CH = 42, PX = 15, PY = 11;
+
+function drawBoard(fen, highlightFrom, highlightTo) {
+  const board = parseFen(fen || INIT_FEN);
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  // 背景
+  const grad = ctx.createRadialGradient(198,220,0,198,220,300);
+  grad.addColorStop(0,'#221c14'); grad.addColorStop(1,'#161210');
+  ctx.fillStyle=grad; ctx.fillRect(0,0,396,440);
+
+  // 网格线
+  ctx.strokeStyle='#4a3f30'; ctx.lineWidth=0.7; ctx.globalAlpha=0.6;
+  for(let r=0;r<10;r++){ctx.beginPath();ctx.moveTo(PX,PY+r*CH);ctx.lineTo(PX+8*CW,PY+r*CH);ctx.stroke();}
+  for(let c=0;c<9;c++){ctx.beginPath();ctx.moveTo(PX+c*CW,PY);ctx.lineTo(PX+c*CW,PY+4*CH);ctx.stroke();ctx.beginPath();ctx.moveTo(PX+c*CW,PY+5*CH);ctx.lineTo(PX+c*CW,PY+9*CH);ctx.stroke();}
+  ctx.beginPath();ctx.moveTo(PX,PY+4*CH);ctx.lineTo(PX,PY+5*CH);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(PX+8*CW,PY+4*CH);ctx.lineTo(PX+8*CW,PY+5*CH);ctx.stroke();
+  // 九宫斜线
+  ctx.beginPath();ctx.moveTo(PX+3*CW,PY);ctx.lineTo(PX+5*CW,PY+2*CH);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(PX+5*CW,PY);ctx.lineTo(PX+3*CW,PY+2*CH);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(PX+3*CW,PY+7*CH);ctx.lineTo(PX+5*CW,PY+9*CH);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(PX+5*CW,PY+7*CH);ctx.lineTo(PX+3*CW,PY+9*CH);ctx.stroke();
+  ctx.globalAlpha=1;
+
+  // 楚河汉界
+  ctx.fillStyle='#4a3f30'; ctx.globalAlpha=0.35;
+  ctx.font='14px "Noto Serif SC",serif'; ctx.textAlign='center';
+  ctx.fillText('楚 河　　漢 界', PX+4*CW, PY+4.6*CH);
+  ctx.globalAlpha=1;
+
+  // 高亮
+  if(highlightFrom){
+    ctx.fillStyle='#c8962825';
+    ctx.beginPath();ctx.arc(PX+highlightFrom[1]*CW,PY+highlightFrom[0]*CH,CW*0.45,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='#c89628';ctx.lineWidth=1.5;ctx.stroke();
+  }
+  if(highlightTo){
+    ctx.fillStyle='#e85a4f20';
+    ctx.beginPath();ctx.arc(PX+highlightTo[1]*CW,PY+highlightTo[0]*CH,CW*0.45,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='#e85a4f';ctx.lineWidth=1.5;ctx.stroke();
+  }
+
+  // 棋子
+  for(let r=0;r<10;r++) for(let c=0;c<9;c++){
+    const p=board[r][c]; if(!p) continue;
+    const x=PX+c*CW, y=PY+r*CH;
+    const red = p===p.toUpperCase();
+    // 底色
+    ctx.beginPath();ctx.arc(x,y,CW*0.39,0,Math.PI*2);
+    ctx.fillStyle=red?'#1a0805':'#08081a';ctx.fill();
+    ctx.strokeStyle=red?'#c44a3a':'#7a8ea8';ctx.lineWidth=1.5;ctx.stroke();
+    // 内圈
+    ctx.beginPath();ctx.arc(x,y,CW*0.33,0,Math.PI*2);
+    ctx.strokeStyle=red?'#c44a3a44':'#7a8ea844';ctx.lineWidth=0.5;ctx.stroke();
+    // 文字
+    ctx.fillStyle=red?'#e85a4f':'#a0bcd0';
+    ctx.font='bold 16px "Noto Serif SC",serif';ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(PIECES[p],x,y+1);
+  }
+}
+
+// ═══ 棋谱状态 ═══
+let allGames = [];
+let currentGame = null;
+let currentMoves = [];
+let currentPly = 0;
+let fenHistory = [INIT_FEN];
+
+function ucciToCoords(ucci) {
+  // UCCI: col(a-i) + row(0-9), row0=红底=our row9
+  const fc=ucci.charCodeAt(0)-97, fr=9-parseInt(ucci[1]);
+  const tc=ucci.charCodeAt(2)-97, tr=9-parseInt(ucci[3]);
+  return {fr,fc,tr,tc};
+}
+
+function applyMove(fen, ucci) {
+  const board = parseFen(fen);
+  const {fr,fc,tr,tc} = ucciToCoords(ucci);
+  board[tr][tc] = board[fr][fc];
+  board[fr][fc] = null;
+  // 生成FEN
+  let rows=[];
+  for(let r=0;r<10;r++){let s='',e=0;for(let c=0;c<9;c++){if(!board[r][c])e++;else{if(e>0){s+=e;e=0}s+=board[r][c]}}if(e>0)s+=e;rows.push(s);}
+  const side = fen.split(' ')[1]==='w'?'b':'w';
+  return rows.join('/')+' '+side;
+}
+
+function loadGame(game) {
+  currentGame = game;
+  currentMoves = (game.moves_ucci||'').split(/\s+/).filter(m=>m.length===4);
+  currentPly = 0;
+
+  // 构建FEN历史
+  fenHistory = [INIT_FEN];
+  let fen = INIT_FEN;
+  for(const m of currentMoves){
+    try{fen=applyMove(fen,m);fenHistory.push(fen);}catch(e){break;}
+  }
+
+  // 更新UI
+  document.getElementById('gameTitle').textContent = `${game.red||'?'} vs ${game.black||'?'}`;
+  const resultTag = game.result==='red_win'?'<span class="tag tag-red">红胜</span>':game.result==='black_win'?'<span class="tag tag-black">黑胜</span>':'<span class="tag tag-draw">和棋</span>';
+  document.getElementById('gameDetail').innerHTML = `
+    ${resultTag} <span class="tag tag-opening">${game.opening_name||game.eco_code||'未分类'}</span><br>
+    ${game.event||''} ${game.date||''} · ${game.move_count||currentMoves.length}手
+  `;
+
+  renderMoveList();
+  gotoStart();
+
+  // 标记选中
+  document.querySelectorAll('.game-item').forEach(el=>el.classList.remove('selected'));
+  const el = document.querySelector(`[data-id="${game.dpxq_id}"]`);
+  if(el) el.classList.add('selected');
+
+  // 切到着法tab
+  switchTab('moves', document.querySelectorAll('.tabs button')[1]);
+}
+
+function renderMoveList(){
+  const div = document.getElementById('moveList');
+  if(!currentMoves.length){div.innerHTML='<div class="empty">无着法数据</div>';return;}
+  let html='<div class="move-list">';
+  for(let i=0;i<currentMoves.length;i+=2){
+    const num=i/2+1;
+    html+=`<div class="num">${num}.</div>`;
+    html+=`<div class="mv red-mv ${i===currentPly-1?'current':''}" onclick="gotoPly(${i+1})">${currentMoves[i]}</div>`;
+    if(i+1<currentMoves.length){
+      html+=`<div class="mv black-mv ${i+1===currentPly-1?'current':''}" onclick="gotoPly(${i+2})">${currentMoves[i+1]}</div>`;
+    }else{html+=`<div></div>`;}
+  }
+  html+='</div>';
+  div.innerHTML=html;
+}
+
+function renderMovePath(){
+  const div=document.getElementById('movePath');
+  let html='<span class="red" style="background:#2a2520;color:#8a8075" onclick="gotoStart()">初始</span>';
+  for(let i=0;i<Math.min(currentPly,20);i++){
+    const cls=i%2===0?'red':'black';
+    const active=i===currentPly-1?'active':'';
+    html+=`<span class="${cls} ${active}" onclick="gotoPly(${i+1})">${currentMoves[i]}</span>`;
+  }
+  if(currentPly>20) html+=`<span style="color:#5a5550">...+${currentPly-20}步</span>`;
+  div.innerHTML=html;
+}
+
+function updateBoard(){
+  const fen=fenHistory[currentPly]||INIT_FEN;
+  let hlFrom=null, hlTo=null;
+  if(currentPly>0 && currentMoves[currentPly-1]){
+    const {fr,fc,tr,tc}=ucciToCoords(currentMoves[currentPly-1]);
+    hlFrom=[fr,fc]; hlTo=[tr,tc];
+  }
+  drawBoard(fen, hlFrom, hlTo);
+
+  const side=fen.split(' ')[1]==='w'?'红':'黑';
+  const round=Math.floor(currentPly/2)+1;
+  document.getElementById('boardInfo').textContent=`走棋方: ${side} · 第${round}回合 · 步${currentPly}/${currentMoves.length}`;
+
+  renderMovePath();
+  renderMoveList();
+}
+
+function gotoStart(){currentPly=0;updateBoard();}
+function gotoEnd(){currentPly=currentMoves.length;updateBoard();}
+function prevMove(){if(currentPly>0){currentPly--;updateBoard();}}
+function nextMove(){if(currentPly<currentMoves.length){currentPly++;updateBoard();}}
+function gotoPly(p){currentPly=p;updateBoard();}
+
+// 键盘控制
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowLeft')prevMove();
+  else if(e.key==='ArrowRight')nextMove();
+  else if(e.key==='Home')gotoStart();
+  else if(e.key==='End')gotoEnd();
+});
+
+// ═══ Tab切换 ═══
+function switchTab(name,btn){
+  document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('tab-games').style.display=name==='games'?'block':'none';
+  document.getElementById('tab-moves').style.display=name==='moves'?'block':'none';
+}
+
+// ═══ 加载数据 ═══
+async function loadData(){
+  try{
+    // 尝试从API加载
+    const resp = await fetch('http://localhost:8000/api/v1/stats');
+    const stats = await resp.json();
+    document.getElementById('totalGames').textContent=stats.total_games||0;
+    document.getElementById('totalKnives').textContent=stats.total_knives||0;
+  }catch(e){
+    document.getElementById('totalGames').textContent='离线';
+  }
+
+  // 加载本地棋谱 (通过小型本地服务或直接嵌入)
+  // 由于浏览器无法直接读取本地文件，我们用fetch从API获取
+  // 或者嵌入数据
+  try{
+    const resp = await fetch('http://localhost:8000/api/v1/games?page_size=100');
+    const games = await resp.json();
+    if(games && games.length > 0){
+      allGames = games;
+      renderGameList(games);
+      return;
+    }
+  }catch(e){}
+
+  // 如果API没有数据，尝试加载内嵌的示例数据
+  loadEmbeddedData();
+}
+
+function loadEmbeddedData(){
+  // 从dpxq_games目录读取（需要本地服务）
+  // 回退方案：提供一个小型HTTP服务来提供棋谱数据
+  document.getElementById('gameList').innerHTML = `
+    <div class="empty">
+      <p>正在从本地文件加载棋谱...</p>
+      <p style="margin-top:10px;font-size:11px;color:#5a5550">
+        请在项目目录运行:<br>
+        <code style="background:#1a1814;padding:4px 8px;border-radius:4px;color:#c89628">python3 -m http.server 8080</code><br>
+        然后刷新此页面
+      </p>
+    </div>
+  `;
+  // 尝试从本地HTTP服务加载
+  tryLoadFromLocalServer();
+}
+
+async function tryLoadFromLocalServer(){
+  try{
+    // 尝试获取文件列表（如果用python -m http.server）
+    const resp = await fetch('http://localhost:8080/data/dpxq_games/');
+    const html = await resp.text();
+    const links = [...html.matchAll(/href="(dpxq_\d+\.json)"/g)].map(m=>m[1]);
+
+    if(links.length===0) return;
+
+    const games=[];
+    for(const link of links.slice(0,100)){
+      try{
+        const r = await fetch(`http://localhost:8080/data/dpxq_games/${link}`);
+        const g = await r.json();
+        if(g.moves_ucci && g.move_count>=10) games.push(g);
+      }catch(e){}
+    }
+    allGames=games;
+    document.getElementById('totalGames').textContent=games.length;
+    renderGameList(games);
+  }catch(e){
+    document.getElementById('gameList').innerHTML=`
+      <div class="empty">
+        <p>需要启动文件服务来加载棋谱</p>
+        <p style="margin-top:8px;font-size:11px;color:#5a5550">
+          在另一个终端运行:<br><br>
+          <code style="background:#1a1814;padding:6px 10px;border-radius:4px;color:#c89628;display:block;margin-top:4px">
+          cd ~/Downloads/xiangqi-pro-complete<br>
+          python3 -m http.server 8080
+          </code>
+          <br>然后刷新此页面
+        </p>
+      </div>`;
+  }
+}
+
+function renderGameList(games){
+  const div=document.getElementById('gameList');
+  if(!games.length){div.innerHTML='<div class="empty">无棋谱数据</div>';return;}
+  div.innerHTML=games.map(g=>{
+    const result=g.result==='red_win'?'<span class="tag tag-red">红胜</span>':g.result==='black_win'?'<span class="tag tag-black">黑胜</span>':g.result==='draw'?'<span class="tag tag-draw">和棋</span>':'';
+    return `<div class="game-item" data-id="${g.dpxq_id||g.id||''}" onclick='loadGame(${JSON.stringify(g).replace(/'/g,"&#39;")})'>
+      <div class="title">${g.red||'?'} vs ${g.black||'?'}</div>
+      <div class="meta">${result} <span class="tag tag-opening">${(g.opening_name||g.eco_code||'').substring(0,25)}</span> ${g.move_count||'?'}手 ${g.date||''}</div>
+    </div>`;
+  }).join('');
+}
+
+function filterGames(){
+  const q=document.getElementById('searchInput').value.toLowerCase();
+  if(!q){renderGameList(allGames);return;}
+  const filtered=allGames.filter(g=>{
+    const text=`${g.red||''} ${g.black||''} ${g.opening_name||''} ${g.event||''} ${g.eco_code||''}`.toLowerCase();
+    return text.includes(q);
+  });
+  renderGameList(filtered);
+}
+
+// ═══ 初始化 ═══
+drawBoard(INIT_FEN);
+loadData();
+</script>
+</body>
+</html>
