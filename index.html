@@ -3628,6 +3628,8 @@ function toChineseNotation(bd, fr, fc, tr, tc){
   // 数字：红方→中文（一..九），黑方→阿拉伯（1..9）
   // 进退：红方dr<0为进，黑方dr>0为进
   // 同列多子：前/后/中 前置于棋名，离对方近的为"前"
+  // 斜走棋子（马/相/象/仕/士）：终点用目标纵线号
+  // 直走棋子（车/炮/兵/卒/帅/将）：进退用步数，平用目标纵线号
   // ══════════════════════════════════════════════════════════════
   const p = bd[fr][fc];
   if(!p) return '';
@@ -3636,12 +3638,15 @@ function toChineseNotation(bd, fr, fc, tr, tc){
   const colN = isRed ? (c => 9 - c) : (c => c + 1); // 各方视角列号
   const num  = n => isRed ? ZH_N[n] : String(n);   // 数字转字符串
 
+  // 繁体棋子名→简体记谱名
+  const NOTATION_CHAR = {'車':'车','馬':'马','帥':'帅','將':'将'};
+  const pName = NOTATION_CHAR[p.char] || p.char;
+
   const dr = tr - fr;
   const forward = isRed ? (dr < 0) : (dr > 0);
   const dir = dr === 0 ? '平' : (forward ? '进' : '退');
 
-  // 终点数字：马/相/象/仕/士→目标列，其余进退→步数，平→目标列
-  // 用走子几何判断：列发生变化且行也变化（斜走）→用目标列号
+  // 终点数字：斜走棋子→目标纵线号，直走棋子→进退用步数、平用目标纵线号
   const dc = tc - fc;
   const isDiag = (dc !== 0 && dr !== 0);
   const endN = (dr === 0 || isDiag) ? colN(tc) : Math.abs(dr);
@@ -3664,10 +3669,10 @@ function toChineseNotation(bd, fr, fc, tr, tc){
       : sameRows.length===3
         ? ['前','中','后'][pos]
         : num(pos+1);
-    return posChar + p.char + dir + num(endN);
+    return posChar + pName + dir + num(endN);
   }
 
-  return p.char + num(colN(fc)) + dir + num(endN);
+  return pName + num(colN(fc)) + dir + num(endN);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -6515,22 +6520,22 @@ function _detectBoardCorners(img){
   return[[L/iw,T/ih],[R/iw,T/ih],[R/iw,B/ih],[L/iw,B/ih]];
 }
 
-// ── 颜色采样 + 分类 v5 ────────────────────────────────────────
+// ── 颜色采样 + 分类 v8 ────────────────────────────────────────
 //
-// 核心改进：
-// 1. 多圈采样（内圈：半径40%格距，不碰棋盘线）
-// 2. 背景用格子"中心点"（4个交叉点围合的中心），完全避开棋盘线
-// 3. 红色判断：HSV色相(H<20||H>340) + RGB差值双重验证
-// 4. 深色判断：HSV明度V<0.45
-// 5. 空格判断：RGB欧氏距离 < 动态阈值
-// 6. 亮色棋子（白底）：与背景亮度差 + 明显比背景亮
+// v8核心改进：用单元格内部亮度方差检测棋子（而非与背景对比）
+// 解决深色棋盘上黑子无法检测的问题。
+//
+// 棋子特征：圆形区域内有文字+边框，亮度方差高
+// 空格特征：近乎均匀的棋盘底色，亮度方差低
+// 红方棋子：含红色色相像素（白底红字）
+// 黑方棋子：高方差但无红色（黑底白字或深色底白字）
 //
 function _sampleAndClassify(img,corners){
   const MAX=1400;
   const sc=Math.min(1,MAX/img.naturalWidth,MAX/img.naturalHeight);
   const iw=Math.round(img.naturalWidth*sc), ih=Math.round(img.naturalHeight*sc);
   const oc=document.createElement('canvas'); oc.width=iw; oc.height=ih;
-  const ctx2=oc.getContext('2d'); ctx2.drawImage(img,0,0,iw,ih);
+  const ctx2=oc.getContext('2d',{willReadFrequently:true}); ctx2.drawImage(img,0,0,iw,ih);
   const pix=ctx2.getImageData(0,0,iw,ih).data;
 
   const pts=corners.map(([nx,ny])=>[nx*iw,ny*ih]);
@@ -6543,8 +6548,7 @@ function _sampleAndClassify(img,corners){
   const stepX=Math.hypot(tr[0]-tl[0],tr[1]-tl[1])/8;
   const stepY=Math.hypot(bl[0]-tl[0],bl[1]-tl[1])/9;
   const step=Math.min(stepX,stepY);
-  // 采样半径：35%格距，避开棋盘线（棋盘线宽≈2-4px，格距5%左右）
-  const R=step*0.35;
+  const R=step*0.38;
 
   const getPx=(x,y)=>{
     const xi=Math.max(0,Math.min(iw-1,Math.round(x)));
@@ -6553,53 +6557,41 @@ function _sampleAndClassify(img,corners){
     return[pix[i],pix[i+1],pix[i+2]];
   };
 
-  const rgb2hsv=(r,g,b)=>{
-    r/=255;g/=255;b/=255;
-    const mx=Math.max(r,g,b),mn=Math.min(r,g,b),d=mx-mn;
-    let h=0;
-    if(d>0){
-      if(mx===r)h=((g-b)/d+6)%6;
-      else if(mx===g)h=(b-r)/d+2;
-      else h=(r-g)/d+4;
-      h*=60;
-    }
-    return[h,mx>0?d/mx:0,mx];
-  };
-
-  // 圆形区域采样
+  // 采样单元格：返回均值、方差、红色像素比例、亮色像素比例
   const sampleCell=(cx,cy)=>{
     const Ri=Math.ceil(R);
-    let rS=0,gS=0,bS=0,cnt=0,redPx=0,darkPx=0;
+    const lums=[]; let redPx=0,brightPx=0,cnt=0;
+    let rS=0,gS=0,bS=0;
     for(let dy=-Ri;dy<=Ri;dy++) for(let dx=-Ri;dx<=Ri;dx++){
       if(dx*dx+dy*dy>R*R)continue;
       const[rv,gv,bv]=getPx(cx+dx,cy+dy);
-      rS+=rv;gS+=gv;bS+=bv;cnt++;
-      const[h,s,v]=rgb2hsv(rv,gv,bv);
-      // 红色：HSV色相 + RGB差值双保险
-      if(((h<20||h>340)&&s>0.28&&v>0.28)||(rv>120&&rv-gv>40&&rv-bv>40)) redPx++;
-      // 深色：明度低
-      if(v<0.45&&(s>0.05||v<0.30)) darkPx++;
+      const lum=(rv*77+gv*151+bv*28)/256;
+      lums.push(lum); rS+=rv;gS+=gv;bS+=bv;cnt++;
+      // 红色检测：H在红色范围 + 饱和度够
+      const mx=Math.max(rv,gv,bv),mn=Math.min(rv,gv,bv);
+      const sat=mx>0?(mx-mn)/mx:0;
+      if(rv>100 && rv-gv>30 && rv-bv>30 && sat>0.2) redPx++;
+      else if(mx>0 && sat>0.25){
+        const d=mx-mn; let h=0;
+        if(d>0){
+          if(mx===rv) h=60*((gv-bv)/d%6);
+          else if(mx===gv) h=60*((bv-rv)/d+2);
+          else h=60*((rv-gv)/d+4);
+          if(h<0)h+=360;
+        }
+        if((h<18||h>340)&&sat>0.25&&mx/255>0.25) redPx++;
+      }
+      // 亮色像素
+      if(lum>160) brightPx++;
     }
-    if(!cnt)return{r:128,g:128,b:128,lum:128,redPct:0,darkPct:0};
-    const r=rS/cnt,g=gS/cnt,b=bS/cnt;
-    return{r,g,b,lum:(r*77+g*151+b*28)/255,redPct:redPx/cnt,darkPct:darkPx/cnt};
-  };
-
-  // 背景色：采格子中心（两行两列之间，远离棋盘线）
-  const bgSamples=[];
-  for(let r=0;r<9;r++) for(let c=0;c<8;c++){
-    const[cx,cy]=bilerp((c+0.5)/8,(r+0.5)/9);
-    const[rv,gv,bv]=getPx(cx,cy);
-    bgSamples.push({r:rv,g:gv,b:bv,lum:(rv*77+gv*151+bv*28)/255});
-  }
-  bgSamples.sort((a,b)=>a.lum-b.lum);
-  // 取中间40%（排除棋子和极端光照）
-  const bgSlice=bgSamples.slice(Math.floor(bgSamples.length*0.30),Math.floor(bgSamples.length*0.70));
-  const bgAvg={
-    r:bgSlice.reduce((s,c)=>s+c.r,0)/bgSlice.length,
-    g:bgSlice.reduce((s,c)=>s+c.g,0)/bgSlice.length,
-    b:bgSlice.reduce((s,c)=>s+c.b,0)/bgSlice.length,
-    lum:bgSlice.reduce((s,c)=>s+c.lum,0)/bgSlice.length
+    if(!cnt) return{lum:128,variance:0,redPct:0,brightPct:0,r:128,g:128,b:128};
+    const meanLum=lums.reduce((a,b)=>a+b,0)/cnt;
+    const variance=lums.reduce((a,b)=>a+(b-meanLum)**2,0)/cnt;
+    return{
+      lum:meanLum,variance,
+      redPct:redPx/cnt,brightPct:brightPx/cnt,
+      r:rS/cnt,g:gS/cnt,b:bS/cnt
+    };
   };
 
   // 采样全部90格点
@@ -6614,107 +6606,387 @@ function _sampleAndClassify(img,corners){
 
   const vals=raw.flat();
 
-  // 动态阈值：基于分布自适应
-  const redSorted=vals.map(v=>v.redPct).sort((a,b)=>a-b);
-  const darkSorted=vals.map(v=>v.darkPct).sort((a,b)=>a-b);
-  // 70%分位：约有30%格子有棋子，这个分位基本是"有棋子的最低值"
-  const p70r=redSorted[Math.floor(redSorted.length*0.70)];
-  const p70d=darkSorted[Math.floor(darkSorted.length*0.70)];
-  // 阈值：max(固定下限, 70%分位×0.5)
-  const redThr=Math.min(0.25, Math.max(0.05, p70r*0.50));
-  const darkThr=Math.min(0.35, Math.max(0.08, p70d*0.50));
+  // 动态阈值：基于方差分布
+  // 有棋子的格子方差高（文字+边缘），空格方差低（均匀底色）
+  const varSorted=[...vals.map(v=>v.variance)].sort((a,b)=>a-b);
+  // 空格占~60%，棋子占~40%。取60%分位作为基准
+  const varP60=varSorted[Math.floor(varSorted.length*0.60)];
+  const varP30=varSorted[Math.floor(varSorted.length*0.30)];
+  // 棋子阈值：空格方差中位数的2倍，至少50
+  const pieceVarThr=Math.max(50, varP60*2, (varP60+varP30));
 
-  // 色差（RGB欧氏距离）
-  const colorDist=(s)=>{
-    const dr=s.r-bgAvg.r,dg=s.g-bgAvg.g,db=s.b-bgAvg.b;
-    return Math.sqrt(dr*dr+dg*dg+db*db);
-  };
-  const distSorted=vals.map(s=>colorDist(s)).sort((a,b)=>a-b);
-  // 空格阈值：取88%分位的25%（约12%的格子明显不同于背景）
-  const emptyThr=Math.max(16, distSorted[Math.floor(distSorted.length*0.88)]*0.25);
+  // 红色阈值
+  const redSorted=[...vals.map(v=>v.redPct)].sort((a,b)=>a-b);
+  const redP80=redSorted[Math.floor(redSorted.length*0.80)];
+  const redThr=Math.max(0.04, Math.min(0.20, redP80*0.3));
 
   const result=[];
   for(let r=0;r<10;r++){
     result.push([]);
     for(let c=0;c<9;c++){
       const s=raw[r][c];
-      const dist=colorDist(s);
+      const hasPiece=s.variance>pieceVarThr;
       const isRed=s.redPct>=redThr;
-      const isDark=s.darkPct>=darkThr && s.lum<bgAvg.lum-15;
-      // 亮色棋子：比背景亮很多（白底棋子）
-      const isBright=s.lum>bgAvg.lum+25 && dist>emptyThr;
-      const hasPiece=dist>emptyThr || isRed || isDark;
-      if(!hasPiece)         result[r].push({type:'empty'});
-      else if(isRed)        result[r].push({type:'red'});
-      else if(isDark)       result[r].push({type:'black'});
-      else if(isBright)     result[r].push({type:'red'});    // 白底棋子默认红方
-      else if(s.lum<bgAvg.lum-12) result[r].push({type:'black'});
-      else                  result[r].push({type:'red'});
+
+      if(!hasPiece){
+        // 额外检查：明显高红色像素也算棋子
+        if(isRed && s.redPct>0.08) result[r].push({type:'red'});
+        else result[r].push({type:'empty'});
+      } else if(isRed){
+        result[r].push({type:'red'});
+      } else {
+        // 有棋子但不是红色→黑方
+        result[r].push({type:'black'});
+      }
     }
   }
   return result;
 }
 
-// ── 棋子类型推断 v5 ───────────────────────────────────────────
+// ── 棋子文字轮廓识别 v9 ──────────────────────────────────────
 //
-// 改进：
-// 1. 动态底行检测（不依赖固定行号）
-// 2. 炮：底行±2行，列1/7优先；若不在，取离列1/7最近的
-// 3. 强约束后处理（将帅唯一、仕相九宫约束）
+// v9改进：
+// 1. 自动极性二值化（不再假设红=暗字/黑=亮字，自动检测）
+// 2. 多维评分：模板匹配 + 墨水密度 + 位置先验 + 棋规约束
+// 3. 约束全局分配（棋子数量上限：1帅2车2马2炮2相2仕5兵）
+// 4. 防止退化结果（如22兵8仕）
 //
-function _inferBoard(cg){
+const _TMPL_S=48; // 模板归一化尺寸
+let _binTmplCache=null;
+
+// 生成纯文字二值模板
+function _getBinTemplates(){
+  if(_binTmplCache) return _binTmplCache;
+  const S=_TMPL_S;
+  const oc=document.createElement('canvas'); oc.width=S; oc.height=S;
+  const ctx=oc.getContext('2d',{willReadFrequently:true});
+  const templates={};
+  const allChars=['帥','車','馬','炮','相','仕','兵','將','象','士','卒'];
+  // 多字体渲染，取并集以增强鲁棒性
+  const fonts=['KaiTi,STKaiti,serif','SimSun,STSong,serif','sans-serif'];
+
+  for(const ch of allChars){
+    const bins=[];
+    for(const font of fonts){
+      ctx.clearRect(0,0,S,S);
+      ctx.fillStyle='#fff'; ctx.fillRect(0,0,S,S);
+      ctx.fillStyle='#000';
+      ctx.font=`bold ${Math.round(S*0.62)}px ${font}`;
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText(ch,S/2,S/2);
+      const d=ctx.getImageData(0,0,S,S).data;
+      const bin=new Uint8Array(S*S);
+      for(let i=0;i<S*S;i++) bin[i]=d[i*4]<128?1:0;
+      bins.push(bin);
+    }
+    // 合并多字体：取每个字体的特征
+    templates[ch]={bins, feat:bins.map(b=>_binFeatures(b,S))};
+  }
+  _binTmplCache=templates;
+  return templates;
+}
+
+// 二值图特征：水平/垂直投影 + 分块密度
+function _binFeatures(bin,S){
+  const hProj=new Float32Array(S), vProj=new Float32Array(S);
+  for(let y=0;y<S;y++) for(let x=0;x<S;x++){
+    if(bin[y*S+x]){hProj[y]++;vProj[x]++;}
+  }
+  // 归一化投影
+  let hMax=0,vMax=0;
+  for(let i=0;i<S;i++){if(hProj[i]>hMax)hMax=hProj[i];if(vProj[i]>vMax)vMax=vProj[i];}
+  if(hMax)for(let i=0;i<S;i++)hProj[i]/=hMax;
+  if(vMax)for(let i=0;i<S;i++)vProj[i]/=vMax;
+  // 4x4分块密度
+  const BS=Math.floor(S/4);
+  const blocks=new Float32Array(16);
+  for(let by=0;by<4;by++) for(let bx=0;bx<4;bx++){
+    let cnt=0;
+    for(let y=by*BS;y<(by+1)*BS;y++) for(let x=bx*BS;x<(bx+1)*BS;x++){
+      if(y<S&&x<S&&bin[y*S+x]) cnt++;
+    }
+    blocks[by*4+bx]=cnt/(BS*BS);
+  }
+  return{hProj,vProj,blocks};
+}
+
+// 特征距离（越小越相似）
+function _featDist(f1,f2,S){
+  let dh=0,dv=0,db=0;
+  for(let i=0;i<S;i++){dh+=(f1.hProj[i]-f2.hProj[i])**2;dv+=(f1.vProj[i]-f2.vProj[i])**2;}
+  for(let i=0;i<16;i++) db+=(f1.blocks[i]-f2.blocks[i])**2;
+  return Math.sqrt(dh/S)+Math.sqrt(dv/S)+Math.sqrt(db)*2;
+}
+
+// 二值IoU
+function _binIoU(a,b,N){
+  let inter=0,union=0;
+  for(let i=0;i<N;i++){
+    if(a[i]||b[i])union++;
+    if(a[i]&&b[i])inter++;
+  }
+  return union?inter/union:0;
+}
+
+// Otsu二值化
+function _otsuThreshold(gray,N){
+  const hist=new Int32Array(256);
+  for(let i=0;i<N;i++) hist[Math.min(255,Math.max(0,Math.round(gray[i])))]++;
+  let total=N,sum=0;
+  for(let i=0;i<256;i++) sum+=i*hist[i];
+  let sumB=0,wB=0,maxVar=0,threshold=128;
+  for(let i=0;i<256;i++){
+    wB+=hist[i]; if(!wB)continue;
+    const wF=total-wB; if(!wF)break;
+    sumB+=i*hist[i];
+    const mB=sumB/wB, mF=(sum-sumB)/wF;
+    const v=wB*wF*(mB-mF)*(mB-mF);
+    if(v>maxVar){maxVar=v;threshold=i;}
+  }
+  return threshold;
+}
+
+// 为棋子计算所有候选类型的分数（不再只返回最优，而是全部）
+function _scorePieceAllTypes(pieceBin,pieceFeat,side,inkRatio,row,col,redOnBottom){
+  const templates=_getBinTemplates();
+  const candidates=side==='red'
+    ?['帥','車','馬','炮','相','仕','兵']
+    :['將','車','馬','炮','象','士','卒'];
+  const scores={};
+  const N=_TMPL_S*_TMPL_S;
+
+  // ① 模板匹配分
+  for(const ch of candidates){
+    const tmpl=templates[ch];
+    let maxS=-Infinity;
+    for(let fi=0;fi<tmpl.bins.length;fi++){
+      const iou=_binIoU(pieceBin,tmpl.bins[fi],N);
+      const fd=_featDist(pieceFeat,tmpl.feat[fi],_TMPL_S);
+      const score=iou*0.5+Math.max(0,1-fd)*0.5;
+      if(score>maxS) maxS=score;
+    }
+    scores[ch]=maxS;
+  }
+
+  // ② 墨水密度分（字形笔画复杂度与ink ratio相关）
+  const inkProfiles={
+    '帥':0.33,'將':0.35,'車':0.28,'馬':0.30,'炮':0.30,
+    '相':0.28,'象':0.32,'仕':0.22,'士':0.16,'兵':0.18,'卒':0.22
+  };
+  for(const ch of candidates){
+    const expected=inkProfiles[ch]||0.25;
+    const inkScore=1-Math.min(1,Math.abs(inkRatio-expected)/0.18);
+    scores[ch]=scores[ch]*0.65+inkScore*0.15;
+  }
+
+  // ③ 位置先验分
+  const backRow=side==='red'?(redOnBottom?9:0):(redOnBottom?0:9);
+  const cannonRow=side==='red'?(redOnBottom?7:2):(redOnBottom?2:7);
+  const pawnRow=side==='red'?(redOnBottom?6:3):(redOnBottom?3:6);
+  const rowDist=Math.abs(row-backRow);
+
+  // 底线棋子加分
+  const backPieces=side==='red'?['帥','車','馬','相','仕']:['將','車','馬','象','士'];
+  for(const ch of backPieces) scores[ch]+=Math.max(0,(3-rowDist)*0.06);
+
+  // 炮加分（靠近炮行）
+  scores['炮']+=Math.max(0,(2-Math.abs(row-cannonRow))*0.05);
+
+  // 兵/卒加分（靠近兵行及前方）
+  const pawnChar=side==='red'?'兵':'卒';
+  scores[pawnChar]+=Math.max(0,(3-Math.abs(row-pawnRow))*0.04);
+
+  // ④ 位置约束惩罚
+  const kingChar=side==='red'?'帥':'將';
+  const advChar=side==='red'?'仕':'士';
+  const bishopChar=side==='red'?'相':'象';
+  if(col<3||col>5) scores[kingChar]-=0.30;
+  if(col<3||col>5) scores[advChar]-=0.15;
+  if(col%2!==0) scores[bishopChar]-=0.12;
+  // 帅/将只能在本方宫内
+  const kingHalf=side==='red'?(redOnBottom?[7,9]:[0,2]):(redOnBottom?[0,2]:[7,9]);
+  if(row<kingHalf[0]||row>kingHalf[1]) scores[kingChar]-=0.25;
+
+  return scores;
+}
+
+// ── 约束分配：全局最优指派（棋子数量限制）────────────────────
+function _constrainedAssign(pieceInfos){
+  const maxCount={
+    '帥':1,'車':2,'馬':2,'炮':2,'相':2,'仕':2,'兵':5,
+    '將':1,'象':2,'士':2,'卒':5
+  };
+  const doAssign=(pieces)=>{
+    if(!pieces.length) return [];
+    const used={};
+    const assigned=new Set();
+    const result=[];
+    // 构建优先队列：(score, pieceIdx, charType)
+    const queue=[];
+    for(const p of pieces){
+      for(const[ch,score]of Object.entries(p.scores)){
+        queue.push({score,idx:p.idx,char:ch});
+      }
+    }
+    queue.sort((a,b)=>b.score-a.score);
+    for(const{score,idx,char}of queue){
+      if(assigned.has(idx))continue;
+      const cnt=used[char]||0;
+      if(cnt>=(maxCount[char]||2))continue;
+      assigned.add(idx);
+      used[char]=cnt+1;
+      result.push({idx,char});
+    }
+    // 未分配的棋子用兵/卒兜底
+    for(const p of pieces){
+      if(!assigned.has(p.idx)){
+        const fb=p.isRed?'兵':'卒';
+        result.push({idx:p.idx,char:fb});
+      }
+    }
+    return result;
+  };
+  const redPieces=pieceInfos.filter(p=>p.isRed);
+  const blkPieces=pieceInfos.filter(p=>!p.isRed);
+  return[...doAssign(redPieces),...doAssign(blkPieces)];
+}
+
+function _inferBoard(cg, img, corners){
+  const bd=Array(10).fill(null).map(()=>Array(9).fill(null));
+  if(!img||!corners) return _inferBoardFallback(cg);
+
+  const MAX=1400;
+  const sc=Math.min(1,MAX/img.naturalWidth,MAX/img.naturalHeight);
+  const iw=Math.round(img.naturalWidth*sc), ih=Math.round(img.naturalHeight*sc);
+  const oc=document.createElement('canvas'); oc.width=iw; oc.height=ih;
+  const ctx=oc.getContext('2d',{willReadFrequently:true}); ctx.drawImage(img,0,0,iw,ih);
+  const pix=ctx.getImageData(0,0,iw,ih).data;
+
+  const pts=corners.map(([nx,ny])=>[nx*iw,ny*ih]);
+  const[tl,tr,br,bl]=pts;
+  const bilerp=(u,v)=>[
+    tl[0]*(1-u)*(1-v)+tr[0]*u*(1-v)+br[0]*u*v+bl[0]*(1-u)*v,
+    tl[1]*(1-u)*(1-v)+tr[1]*u*(1-v)+br[1]*u*v+bl[1]*(1-u)*v
+  ];
+
+  const stepX=Math.hypot(tr[0]-tl[0],tr[1]-tl[1])/8;
+  const stepY=Math.hypot(bl[0]-tl[0],bl[1]-tl[1])/9;
+  const cellR=Math.min(stepX,stepY)*0.42;
+  const S=_TMPL_S;
+
+  _getBinTemplates(); // 预初始化模板
+
+  // 判断红方在上还是在下（统计颜色分布）
+  let redBot=0,redTop=0;
+  for(let r=0;r<5;r++) for(let c=0;c<9;c++){
+    if(cg[r][c].type==='red') redTop++;
+    else if(cg[r][c].type==='black') redBot++;
+  }
+  for(let r=5;r<10;r++) for(let c=0;c<9;c++){
+    if(cg[r][c].type==='red') redBot++;
+    else if(cg[r][c].type==='black') redTop++;
+  }
+  const redOnBottom=redBot>=redTop;
+
+  // 收集所有棋子的分数向量
+  const pieceInfos=[];
+  let pieceIdx=0;
+
+  for(let r=0;r<10;r++) for(let c=0;c<9;c++){
+    const t=cg[r][c].type;
+    if(t==='empty') continue;
+    const isRed=t==='red';
+    const side=isRed?'red':'black';
+
+    const[cellX,cellY]=bilerp(c/8,r/9);
+    const innerR=cellR*0.70;
+
+    // 提取灰度
+    const gray=new Float32Array(S*S);
+    for(let py=0;py<S;py++) for(let px=0;px<S;px++){
+      const nx=(px/(S-1)-0.5)*2, ny=(py/(S-1)-0.5)*2;
+      const sx=Math.round(cellX+nx*innerR), sy=Math.round(cellY+ny*innerR);
+      if(sx<0||sx>=iw||sy<0||sy>=ih){gray[py*S+px]=128;continue;}
+      const i=(sy*iw+sx)*4;
+      gray[py*S+px]=(pix[i]*77+pix[i+1]*151+pix[i+2]*28)/256;
+    }
+
+    // ── 自动极性二值化 ──
+    // 不再假设红方=暗字、黑方=亮字，而是自动检测文字极性
+    const thr=_otsuThreshold(gray,S*S);
+    const binA=new Uint8Array(S*S); // 方案A：暗=文字
+    const binB=new Uint8Array(S*S); // 方案B：亮=文字
+    for(let i=0;i<S*S;i++){
+      binA[i]=gray[i]<thr?1:0;
+      binB[i]=gray[i]>thr?1:0;
+    }
+    // 圆形掩码
+    let circlePx=0;
+    for(let py=0;py<S;py++) for(let px=0;px<S;px++){
+      const nx=(px/(S-1)-0.5)*2, ny=(py/(S-1)-0.5)*2;
+      if(nx*nx+ny*ny>0.82*0.82){
+        binA[py*S+px]=0; binB[py*S+px]=0;
+      }else circlePx++;
+    }
+    const cntA=binA.reduce((a,b)=>a+b,0);
+    const cntB=binB.reduce((a,b)=>a+b,0);
+    const ratioA=circlePx?cntA/circlePx:0;
+    const ratioB=circlePx?cntB/circlePx:0;
+    // 汉字墨水比通常12-40%，选更接近25%的方案
+    const useA=Math.abs(ratioA-0.25)<Math.abs(ratioB-0.25);
+    const bin=useA?binA:binB;
+    const inkRatio=useA?ratioA:ratioB;
+
+    const feat=_binFeatures(bin,S);
+    const scores=_scorePieceAllTypes(bin,feat,side,inkRatio,r,c,redOnBottom);
+    pieceInfos.push({idx:pieceIdx++,row:r,col:c,isRed,scores});
+  }
+
+  // 约束全局分配
+  const assignments=_constrainedAssign(pieceInfos);
+  for(const{idx,char}of assignments){
+    const p=pieceInfos[idx];
+    bd[p.row][p.col]={char,isRed:p.isRed};
+  }
+
+  _postFixBoard(bd,cg,-1,-1);
+  return bd;
+}
+
+// 退回方案：无图像时按位置推断（旧逻辑）
+function _inferBoardFallback(cg){
   const bd=Array(10).fill(null).map(()=>Array(9).fill(null));
   const R=(c)=>({char:c,isRed:true});
   const B=(c)=>({char:c,isRed:false});
-
-  // 统计各行棋子位置
   const redCols=Array(10).fill(null).map(()=>[]);
   const blkCols=Array(10).fill(null).map(()=>[]);
   for(let r=0;r<10;r++) for(let c=0;c<9;c++){
     if(cg[r][c].type==='red') redCols[r].push(c);
     else if(cg[r][c].type==='black') blkCols[r].push(c);
   }
-
-  // 找底行：本方半场内棋子最多的行（至少3个）
   const findBackRow=(cols,isRed)=>{
     const range=isRed?[5,9]:[0,4];
     let best=-1,bestN=0;
-    for(let r=range[0];r<=range[1];r++){
-      if(cols[r].length>bestN){bestN=cols[r].length;best=r;}
-    }
+    for(let r=range[0];r<=range[1];r++){if(cols[r].length>bestN){bestN=cols[r].length;best=r;}}
     return bestN>=3?best:-1;
   };
-
-  const redBack=findBackRow(redCols,true);
-  const blkBack=findBackRow(blkCols,false);
-
+  const redBack=findBackRow(redCols,true), blkBack=findBackRow(blkCols,false);
   const RED_BACK={0:'車',1:'馬',2:'相',3:'仕',4:'帥',5:'仕',6:'相',7:'馬',8:'車'};
   const BLK_BACK={0:'車',1:'馬',2:'象',3:'士',4:'將',5:'士',6:'象',7:'馬',8:'車'};
-
-  // 填底行
   if(redBack>=0) for(const c of redCols[redBack]) bd[redBack][c]=R(RED_BACK[c]||'車');
   if(blkBack>=0) for(const c of blkCols[blkBack]) bd[blkBack][c]=B(BLK_BACK[c]||'車');
-
-  // 填炮：底行往里数第2行，在列1/7附近
   const fillCannon=(cols,backRow,isRed)=>{
     if(backRow<0)return;
-    const cannonRow=isRed?backRow-2:backRow+2;
-    if(cannonRow<0||cannonRow>9)return;
-    for(const c of cols[cannonRow]){
-      if(!bd[cannonRow][c]) bd[cannonRow][c]=isRed?R('炮'):B('炮');
-    }
+    const cr=isRed?backRow-2:backRow+2;
+    if(cr<0||cr>9)return;
+    for(const c of cols[cr]){if(!bd[cr][c]) bd[cr][c]=isRed?R('炮'):B('炮');}
   };
-  fillCannon(redCols,redBack,true);
-  fillCannon(blkCols,blkBack,false);
-
-  // 其余格子：兵/卒
+  fillCannon(redCols,redBack,true); fillCannon(blkCols,blkBack,false);
   for(let r=0;r<10;r++) for(let c=0;c<9;c++){
     if(bd[r][c])continue;
-    const t=cg[r][c].type;
-    if(t==='red')        bd[r][c]=R('兵');
-    else if(t==='black') bd[r][c]=B('卒');
+    if(cg[r][c].type==='red') bd[r][c]=R('兵');
+    else if(cg[r][c].type==='black') bd[r][c]=B('卒');
   }
-
   _postFixBoard(bd,cg,redBack,blkBack);
   return bd;
 }
@@ -6860,8 +7132,8 @@ async function cvRecognize(){
   _setStatus('采样格点颜色…'); await new Promise(r=>setTimeout(r,20));
   try{
     const colorGrid=_sampleAndClassify(_recogImg,_cvCorners);
-    _setStatus('推断棋子类型…'); await new Promise(r=>setTimeout(r,20));
-    _cvBoard=_inferBoard(colorGrid);
+    _setStatus('模板匹配识别棋子…'); await new Promise(r=>setTimeout(r,20));
+    _cvBoard=_inferBoard(colorGrid, _recogImg, _cvCorners);
     _cvShowResult(_cvBoard,colorGrid);
     _setRecogPhase(2); _setStatus('');
   }catch(e){
