@@ -6358,13 +6358,15 @@ function _cvDrawPreview(){
     ctx.beginPath();ctx.arc(x,y,2,0,Math.PI*2);ctx.fill();
   }
 
-  // 角点手柄
+  // 角点手柄（加大到16px半径，方便触屏拖拽）
   const CLR=['#ff5252','#ffd740','#69f0ae','#40c4ff'];
   const LBL=['↖','↗','↘','↙'];
   p.forEach(([x,y],i)=>{
-    ctx.fillStyle=CLR[i]; ctx.strokeStyle='rgba(0,0,0,0.7)'; ctx.lineWidth=1.5;
-    ctx.beginPath(); ctx.arc(x,y,11,0,Math.PI*2); ctx.fill(); ctx.stroke();
-    ctx.fillStyle='#000'; ctx.font='bold 10px sans-serif';
+    ctx.fillStyle=CLR[i]; ctx.globalAlpha=0.85;
+    ctx.strokeStyle='rgba(0,0,0,0.8)'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(x,y,16,0,Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.globalAlpha=1;
+    ctx.fillStyle='#000'; ctx.font='bold 12px sans-serif';
     ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText(LBL[i],x,y);
   });
@@ -6372,9 +6374,12 @@ function _cvDrawPreview(){
 }
 
 // ── 拖拽 ─────────────────────────────────────────────────────
+let _cvDragAbort=null;
 function _cvBindDrag(){
-  const rc=document.getElementById('recog-canvas');
-  const nc=rc.cloneNode(true); rc.parentNode.replaceChild(nc,rc);
+  // 用AbortController管理事件，避免cloneNode清空canvas内容
+  if(_cvDragAbort) _cvDragAbort.abort();
+  _cvDragAbort=new AbortController();
+  const sig=_cvDragAbort.signal;
   const canvas=document.getElementById('recog-canvas');
   const getN=e=>{
     const r=canvas.getBoundingClientRect();
@@ -6384,26 +6389,28 @@ function _cvBindDrag(){
   };
   const hit=([nx,ny])=>{
     if(!_cvCorners)return-1;
-    const hr=24/_rcW, asp=_rcW/_rcH;
+    // 触摸命中半径加大到40px，方便手指操作
+    const hr=40/_rcW, asp=_rcW/_rcH;
     for(let i=0;i<4;i++){
       const dx=nx-_cvCorners[i][0], dy=(ny-_cvCorners[i][1])*asp;
       if(dx*dx+dy*dy<hr*hr)return i;
     }
     return-1;
   };
-  canvas.addEventListener('mousedown',e=>{e.preventDefault();_cvDragIdx=hit(getN(e));},{passive:false});
-  canvas.addEventListener('touchstart',e=>{e.preventDefault();_cvDragIdx=hit(getN(e));},{passive:false});
+  canvas.addEventListener('mousedown',e=>{e.preventDefault();_cvDragIdx=hit(getN(e));},{passive:false,signal:sig});
+  canvas.addEventListener('touchstart',e=>{e.preventDefault();_cvDragIdx=hit(getN(e));},{passive:false,signal:sig});
   const mv=e=>{
     e.preventDefault(); if(_cvDragIdx<0)return;
     const[nx,ny]=getN(e);
     _cvCorners[_cvDragIdx]=[Math.max(0,Math.min(1,nx)),Math.max(0,Math.min(1,ny))];
     _cvDrawPreview();
   };
-  canvas.addEventListener('mousemove',mv,{passive:false});
-  canvas.addEventListener('touchmove',mv,{passive:false});
-  const up=e=>{e.preventDefault();_cvDragIdx=-1;};
-  canvas.addEventListener('mouseup',up,{passive:false});
-  canvas.addEventListener('touchend',up,{passive:false});
+  canvas.addEventListener('mousemove',mv,{passive:false,signal:sig});
+  canvas.addEventListener('touchmove',mv,{passive:false,signal:sig});
+  const up=()=>{_cvDragIdx=-1;};
+  canvas.addEventListener('mouseup',up,{passive:false,signal:sig});
+  canvas.addEventListener('touchend',up,{passive:false,signal:sig});
+  canvas.addEventListener('touchcancel',up,{passive:false,signal:sig});
 }
 
 // ── 棋盘四角检测 v5 ───────────────────────────────────────────
